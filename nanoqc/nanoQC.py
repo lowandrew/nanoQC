@@ -1,7 +1,8 @@
-#!/usr/local/env python3
+#!/usr/local/env python
 
 import os
 import sys
+import base64
 import numpy as np
 from time import time
 import matplotlib.pyplot as plt
@@ -9,23 +10,17 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.gridspec as gridspec
 import multiprocessing as mp
-import threading
-from queue import Queue
-from multiprocessing.pool import ThreadPool
+from argparse import ArgumentParser
 from dateutil.parser import parse
 import logging
 from collections import defaultdict, OrderedDict
-from itertools import zip_longest
-from functools import partial
-from contextlib import closing
 from math import ceil
 import subprocess
 import gzip
 from matplotlib.ticker import FuncFormatter, MultipleLocator
 import matplotlib.patches as mpatches
-import datetime as dt
 from math import sqrt
-from itertools import count, islice
+from itertools import islice
 
 
 __author__ = 'duceppemo'
@@ -38,6 +33,16 @@ __version__ = '0.3.3'
 # TODO -> check for dependencies
 # TODO -> unit testing
 # TODO -> add option to use the "sequencing_summary.txt" file as input instead of the fastq files
+# TODO: Change input fastq finding to not recursively find all fastq files. Not sure how to handle to pass/fail in
+# this case
+# TODO: Make HTML report. Done, but need to make it much prettier, add links/stats/etc
+# TODO: Fix bug - having only one sample appears to crash one of the plots
+
+
+class ImageForHTML:
+    def __init__(self, image_title, image_base64_string):
+        self.image_title = image_title
+        self.image_base64_string = image_base64_string
 
 
 class FastqObjects(object):
@@ -74,13 +79,12 @@ class Layout(object):
 
 class NanoQC(object):
 
-    def __init__(self, args):
+    def __init__(self, input_folder, sequencing_summary, output_folder, threads=mp.cpu_count()):
 
         """Define objects based on supplied arguments"""
-        self.args = args
-        self.input_folder = args.fastq
-        self.input_summary = args.summary
-        self.output_folder = args.output
+        self.input_folder = input_folder
+        self.input_summary = sequencing_summary
+        self.output_folder = output_folder
 
         # Shared data structure(s)
         # self.sample_dict = dict()
@@ -97,11 +101,8 @@ class NanoQC(object):
         self.total_time = list()
 
         # Threading
-        self.cpu = mp.cpu_count()
+        self.cpu = threads
         # self.my_queue = Queue(maxsize=0)
-
-        # run the script
-        self.run()
 
     def run(self):
         """
@@ -113,7 +114,7 @@ class NanoQC(object):
 
         self.check_dependencies()
 
-        # Check if correct argument combination is being used
+        # Check if correct argument combination is being used - this also populates self.input_fastq_list
         self.check_args()
 
         # Select appropriate parser based on input type
@@ -125,7 +126,9 @@ class NanoQC(object):
             if not self.sample_dict:
                 raise Exception('No data!')
             else:
-                self.make_fastq_plots(self.sample_dict)  # make the plots for fastq files
+                plots = self.make_fastq_plots(self.sample_dict)  # make the plots for fastq files
+                logging.info('Writing HTML reports...')
+                self.write_html_report(plots)
         else:  # elif self.input_summary:
             self.parse_summary(self.summary_dict)
 
@@ -141,6 +144,25 @@ class NanoQC(object):
 
         self.total_time.append(time())
         print("\n Total run time: {}".format(self.elapsed_time(self.total_time[1] - self.total_time[0])))
+
+    def write_html_report(self, plots):
+        # TODO: There may be a much better way to do this than writing raw HTML. To be investigated.
+        html_content = list()
+        html_content.append('<html><head></head>')
+
+        html_content.append('<h1>This is a NanoQC report.</h2>')
+        for plot in plots:
+            html_content.append('\n<br>\n<br>\n<br>\n<br>')
+            html_content.append('<h4>{}</h4>'.format(plot.image_title))
+            html_content.append('\n<br>\n<br>')
+            html_content.append('<img src="data:image/png;base64,{}">'.format(plot.image_base64_string))
+            html_content.append('\n<br>\n<br>\n<br>\n<br>')
+
+        html_content.append('<body>')
+        html_content.append('</body></html>')
+        html_string = '\n'.join(html_content)
+        with open(os.path.join(self.output_folder, 'nanoQC_report.html'), 'w') as f:
+            f.write(html_string)
 
     def check_dependencies(self):
         pass
@@ -276,11 +298,15 @@ class NanoQC(object):
         # Sequence length
         length = len(seq)
 
-        # Average phred score
-        phred_list = list()
-        for letter in qual:
+        # Average phred score - might be faster to initialize whole list at once rather than appending all the time
+        # Looks to be a very minor speedup
+        phred_list = [None] * length
+        for i in range(len(qual)):
+            phred_list[i] = qual[i]
+        # for letter in qual:
             # phred_list.append(ord(letter))
-            phred_list.append(letter)
+            # phred_list.append(letter)
+        # print(phred_list)
         average_phred = sum(phred_list) / len(phred_list) - 33
 
         # GC percentage
@@ -884,53 +910,54 @@ class NanoQC(object):
 
     def make_fastq_plots(self, d):
 
+        plots = list()
         print("\nMaking plots:")
 
         print('\tPlotting total_reads_vs_time...', end="", flush=True)
         start_time = time()
-        self.plot_total_reads_vs_time(d)
+        plots.append(self.plot_total_reads_vs_time(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
 
         print('\tPlotting total_bp_vs_time...', end="", flush=True)
         start_time = time()
-        self.plot_total_bp_vs_time(d)
+        plots.append(self.plot_total_bp_vs_time(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
 
         print('\tPlotting reads_vs_bp_per_sample...', end="", flush=True)
         start_time = time()
-        self.plot_reads_vs_bp_per_sample(d)
+        plots.append(self.plot_reads_vs_bp_per_sample(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
 
         print('\tPlotting reads_per_sample_vs_time...', end="", flush=True)
         start_time = time()
-        self.plot_reads_per_sample_vs_time(d)
+        plots.append(self.plot_reads_per_sample_vs_time(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
 
         print('\tPlotting bp_per_sample_vs_time...', end="", flush=True)
         start_time = time()
-        self.plot_bp_per_sample_vs_time(d)
+        plots.append(self.plot_bp_per_sample_vs_time(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
 
         print('\tPlotting phred_score_distribution...', end="", flush=True)
         start_time = time()
-        self.plot_phred_score_distribution(d)
+        plots.append(self.plot_phred_score_distribution(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
 
         print('\tPlotting length_distribution...', end="", flush=True)
         start_time = time()
-        self.plot_length_distribution(d)
+        plots.append(self.plot_length_distribution(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
@@ -944,14 +971,14 @@ class NanoQC(object):
 
         print('\tPlotting pores_output_vs_time_all...', end="", flush=True)
         start_time = time()
-        self.plot_pores_output_vs_time_all(d)
+        plots.append(self.plot_pores_output_vs_time_all(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
 
         print('\tPlotting quality_vs_time...', end="", flush=True)
         start_time = time()
-        self.plot_quality_vs_time(d)
+        plots.append(self.plot_quality_vs_time(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
@@ -965,7 +992,7 @@ class NanoQC(object):
 
         print('\tPlotting quality_vs_length_hex...', end="", flush=True)
         start_time = time()
-        self.plot_quality_vs_length_hex(d)
+        plots.append(self.plot_quality_vs_length_hex(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
@@ -980,38 +1007,40 @@ class NanoQC(object):
 
         print('\tPlotting channel_output_all...', end="", flush=True)
         start_time = time()
-        self.plot_channel_output_all(d)
+        plots.append(self.plot_channel_output_all(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
 
         print('\tPlotting gc_vs_time...', end="", flush=True)
         start_time = time()
-        self.plot_gc_vs_time(d)
+        plots.append(self.plot_gc_vs_time(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
 
         print('\tPlotting gc_vs_length_hex...', end="", flush=True)
         start_time = time()
-        self.plot_gc_vs_length_hex(d)
+        plots.append(self.plot_gc_vs_length_hex(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
 
         print('\tPlotting pores_gc_output_vs_time_all...', end="", flush=True)
         start_time = time()
-        self.plot_pores_gc_output_vs_time_all(d)
+        plots.append(self.plot_pores_gc_output_vs_time_all(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
 
         print('\tPlotting pores_gc_output_vs_time_per_sample...', end="", flush=True)
         start_time = time()
-        self.plot_pores_gc_output_vs_time_per_sample(d)
+        plots.append(self.plot_pores_gc_output_vs_time_per_sample(d))
         end_time = time()
         interval = end_time - start_time
         print(" took %s" % self.elapsed_time(interval))
+
+        return plots
 
     def plot_total_reads_vs_time(self, d):
         """
@@ -1083,6 +1112,11 @@ class NanoQC(object):
         ax.set(xlabel='Time (h)', ylabel='Number of reads', title='Total read yield')
         plt.tight_layout()
         fig.savefig(self.output_folder + "/total_reads_vs_time.png")
+        with open(os.path.join(self.output_folder, 'total_reads_vs_time.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Total Reads Vs Time',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     def plot_reads_per_sample_vs_time(self, d):
         """
@@ -1134,6 +1168,12 @@ class NanoQC(object):
         ax.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x, loc: "{:,}".format(int(x))))
         plt.tight_layout()  #
         fig.savefig(self.output_folder + "/reads_per_sample_vs_time.png")
+        with open(os.path.join(self.output_folder, 'reads_per_sample_vs_time.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Reads Per Sample Vs Time',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
+
 
     def plot_bp_per_sample_vs_time(self, d):
         """
@@ -1191,6 +1231,11 @@ class NanoQC(object):
         plt.tight_layout()
         # Save figure to file
         fig.savefig(self.output_folder + "/bp_per_sample_vs_time.png")
+        with open(os.path.join(self.output_folder, 'bp_per_sample_vs_time.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Base Pairs Per Sample Vs Time',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     def plot_total_bp_vs_time(self, d):
         """
@@ -1269,6 +1314,11 @@ class NanoQC(object):
         ax.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x, loc: "{:,}".format(int(x))))
         plt.tight_layout()
         fig.savefig(self.output_folder + "/total_bp_vs_time.png")
+        with open(os.path.join(self.output_folder, 'total_bp_vs_time.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Total Base Pairs Vs Time',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     def plot_quality_vs_time(self, d):
         """
@@ -1359,6 +1409,11 @@ class NanoQC(object):
 
         plt.tight_layout(rect=[0, 0, 1, 0.95])  # accounts for the "suptitile" [left, bottom, right, top]
         fig.savefig(self.output_folder + "/quality_vs_time.png")
+        with open(os.path.join(self.output_folder, 'quality_vs_time.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Quality Vs Time',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     def plot_phred_score_distribution(self, d):
         """
@@ -1407,6 +1462,11 @@ class NanoQC(object):
         ax.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x, loc: "{:,}".format(int(x))))
         plt.tight_layout()
         fig.savefig(self.output_folder + "/phred_score_distribution.png")
+        with open(os.path.join(self.output_folder, 'phred_score_distribution.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Phred Score Distribution',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     def plot_length_distribution(self, d):
         """
@@ -1454,6 +1514,11 @@ class NanoQC(object):
         ax.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x, loc: "{:,}".format(int(x))))
         plt.tight_layout()
         fig.savefig(self.output_folder + "/length_distribution.png")
+        with open(os.path.join(self.output_folder, 'length_distribution.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Length Distribution',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     def test_plot(self, d):
         """ TAKES 50 MIN to run! The KDE part takes way too long."""
@@ -1663,6 +1728,11 @@ class NanoQC(object):
 
         # Save figure to file
         g.savefig(self.output_folder + "/quality_vs_length_kde.png")
+        with open(os.path.join(self.output_folder, 'quality_vs_length_kde.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Quality Vs Length KDE',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     def plot_quality_vs_length_hex(self, d):
         """
@@ -1755,6 +1825,11 @@ class NanoQC(object):
 
         # Save figure to file
         g.savefig(self.output_folder + "/quality_vs_length_hex.png")
+        with open(os.path.join(self.output_folder, 'quality_vs_length_hex.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Quality Vs Length Hex',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     def jointplot_w_hue(self, data, x, y, hue=None, colormap=None,
                         figsize=None, fig=None, scatter_kws=None):
@@ -1907,6 +1982,11 @@ class NanoQC(object):
                                  scatter_kws={'s': 1, 'alpha': 0.1})
 
         fig.savefig(self.output_folder + "/quality_vs_length_scatter.png")
+        with open(os.path.join(self.output_folder, 'quality_vs_length_scatter.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Quality Vs Length Scatter',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     def plot_test_old(self, d):
         """
@@ -2061,7 +2141,11 @@ class NanoQC(object):
 
         plt.tight_layout()
         fig.savefig(self.output_folder + "/reads_vs_bp_per_sample.png")
-
+        with open(os.path.join(self.output_folder, 'reads_vs_bp_per_sample.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Reads Vs BP Per Sample',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
         #########################################
         # ax = df.plot(kind='bar', secondary_y='reads', title='bp versus reads',
         #              x='Sample', y=['bp', 'reads'], mark_right=False)
@@ -2140,6 +2224,11 @@ class NanoQC(object):
         plt.tight_layout()  # Get rid of extra margins around the plot
         fig = g.get_figure()  # Get figure from FacetGrid
         fig.savefig(self.output_folder + "/pores_output_vs_time.png")
+        with open(os.path.join(self.output_folder, 'pores_output_vs_time.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Pores Output Vs Time',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     def plot_pores_output_vs_time_all(self, d):
 
@@ -2241,6 +2330,11 @@ class NanoQC(object):
         plt.tight_layout()  # Get rid of extra margins around the plot
         fig = g.get_figure()  # Get figure from FacetGrid
         fig.savefig(self.output_folder + "/pores_output_vs_time_all.png")
+        with open(os.path.join(self.output_folder, 'pores_output_vs_time_all.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Pores Output Vs Time All',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     def plot_channel_output_all(self, d):
         """
@@ -2294,6 +2388,11 @@ class NanoQC(object):
             axs[i].set_title("{} reads output per channel".format(flag))
         plt.tight_layout()  # Get rid of extra margins around the plot
         fig.savefig(self.output_folder + "/channel_output_all.png")
+        with open(os.path.join(self.output_folder, 'channel_output_all.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Channel Output All',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     def plot_gc_vs_time(self, d):
         """
@@ -2386,6 +2485,11 @@ class NanoQC(object):
 
         plt.tight_layout(rect=[0, 0, 1, 0.95])  # accounts for the "suptitile" [left, bottom, right, top]
         fig.savefig(self.output_folder + "/gc_vs_time.png")
+        with open(os.path.join(self.output_folder, 'gc_vs_time.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='GC Vs Time',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     def plot_gc_vs_length_hex(self, d):
         """
@@ -2469,6 +2573,11 @@ class NanoQC(object):
 
         # Save figure to file
         g.savefig(self.output_folder + "/gc_vs_length_hex.png")
+        with open(os.path.join(self.output_folder, 'gc_vs_length_hex.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='GC Vs Length Hex',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     def plot_pores_gc_output_vs_time_all(self, d):
 
@@ -2535,6 +2644,11 @@ class NanoQC(object):
 
         plt.tight_layout()  # Get rid of extra margins around the plot
         fig.savefig(self.output_folder + "/pores_gc_output_vs_time_all.png")
+        with open(os.path.join(self.output_folder, 'pores_gc_output_vs_time_all.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Pore GC Output Vs Time All',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     # @staticmethod
     # def is_prime(n):
@@ -2635,6 +2749,11 @@ class NanoQC(object):
 
         plt.tight_layout(rect=[0.02, 0.02, 1, 0.95])  # accounts for the "suptitile" [left, bottom, right, top]
         fig.savefig(self.output_folder + "/pores_gc_output_vs_time_all.png")
+        with open(os.path.join(self.output_folder, 'pores_gc_output_vs_time_all.png'), 'rb') as image_file:
+            encoded_string = base64.b64encode(image_file.read())
+        plot = ImageForHTML(image_title='Pore GC Output Vs Time All',
+                            image_base64_string=encoded_string.decode('utf-8'))
+        return plot
 
     # Summary plots
 
@@ -3726,8 +3845,6 @@ class NanoQC(object):
 
 if __name__ == '__main__':
 
-    from argparse import ArgumentParser
-
     parser = ArgumentParser(description='Plot QC data from nanopore sequencing run')
     parser.add_argument('-f', '--fastq', metavar='/basecalled/folder/',
                         required=False,
@@ -3738,8 +3855,18 @@ if __name__ == '__main__':
     parser.add_argument('-o', '--output', metavar='/qc/',
                         required=True,
                         help='Output folder')
-
+    parser.add_argument('-t', '--threads',
+                        type=int,
+                        default=mp.cpu_count(),
+                        help='Number or threads to run')
+    logging.basicConfig(format='\033[92m \033[1m %(asctime)s \033[0m %(message)s ',
+                        level=logging.INFO,
+                        datefmt='%Y-%m-%d %H:%M:%S')
     # Get the arguments into an object
     arguments = parser.parse_args()
 
-    NanoQC(arguments)
+    nanoqc = NanoQC(input_folder=arguments.fastq,
+                    sequencing_summary=arguments.summary,
+                    output_folder=arguments.output,
+                    threads=arguments.threads)
+    nanoqc.run()
