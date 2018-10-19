@@ -2,25 +2,26 @@
 
 import os
 import sys
+import gzip
 import base64
+import pathlib
+import logging
 import numpy as np
-from time import time
-import matplotlib.pyplot as plt
 import pandas as pd
+from time import time
 import seaborn as sns
-import matplotlib.gridspec as gridspec
 import multiprocessing as mp
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import matplotlib.gridspec as gridspec
+from matplotlib.ticker import FuncFormatter, MultipleLocator
+from collections import defaultdict, OrderedDict
 from argparse import ArgumentParser
 from dateutil.parser import parse
-import logging
-from collections import defaultdict, OrderedDict
-from math import ceil
-import subprocess
-import gzip
-from matplotlib.ticker import FuncFormatter, MultipleLocator
-import matplotlib.patches as mpatches
-from math import sqrt
 from itertools import islice
+from math import ceil
+from math import sqrt
+import subprocess
 
 
 __author__ = 'duceppemo'
@@ -119,6 +120,7 @@ class NanoQC(object):
 
         # Select appropriate parser based on input type
         if self.input_folder:
+            self.find_fastq_files()
             # self.parse_fastq(self.input_fastq_list, self.sample_dict)
             self.parse_fastq_parallel(self.input_fastq_list, self.sample_dict)
 
@@ -173,15 +175,14 @@ class NanoQC(object):
         Check if output folder exists
         :return:
         """
-        import pathlib
 
         if self.input_folder and self.summary_dict:
             print('Please use only one input type ("-f" or "-s")')
-            parser.print_help(sys.stderr)
+            # parser.print_help(sys.stderr)  # This doesn't work - I think the parser would have to be passed into this to make it work
             sys.exit(1)
         elif not self.input_folder and not self.input_summary:
             print('Please use one of the following input types ("-f" or "-s")')
-            parser.print_help(sys.stderr)
+            # parser.print_help(sys.stderr)
             sys.exit(1)
 
         if not self.output_folder:
@@ -191,16 +192,18 @@ class NanoQC(object):
         else:
             pathlib.Path(self.output_folder).mkdir(parents=True, exist_ok=True)  # Create if if it does not exist
 
-        if self.input_folder:
-            for root, directories, filenames in os.walk(self.input_folder):
-                for filename in filenames:
-                    absolute_path = os.path.join(root, filename)
-                    if os.path.isfile(absolute_path) and filename.endswith(('.fastq','.fastq.gz')):
-                        self.input_fastq_list.append(absolute_path)
+
+    def find_fastq_files(self):
+        for root, directories, filenames in os.walk(self.input_folder):
+            for filename in filenames:
+                absolute_path = os.path.join(root, filename)
+                if os.path.isfile(absolute_path) and filename.endswith(('.fastq','.fastq.gz')):
+                    self.input_fastq_list.append(absolute_path)
 
             # check if input_fastq_list is not empty
             if not self.input_fastq_list:
                 raise Exception("No fastq file found in %s!" % self.input_folder)
+
 
     def hbytes(self, num):
         """
