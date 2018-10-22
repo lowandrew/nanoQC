@@ -37,8 +37,8 @@ __version__ = '0.3.3'
 # TODO: Change input fastq finding to not recursively find all fastq files. Not sure how to handle to pass/fail in
 # this case
 # TODO: Make HTML report. Done, but need to make it much prettier, add links/stats/etc
-# TODO: Fix bug - having only one sample appears to crash one of the plots
-
+# TODO: Think about sample naming - currently, the anything before first _ in filename is used as name. My albacore
+# output files are all fastq_bunchofotherjunk, so nanoQC thinks it's only one sample, even if many.
 
 class ImageForHTML:
     def __init__(self, image_title, image_base64_string):
@@ -123,7 +123,6 @@ class NanoQC(object):
             self.find_fastq_files()
             # self.parse_fastq(self.input_fastq_list, self.sample_dict)
             self.parse_fastq_parallel(self.input_fastq_list, self.sample_dict)
-
             # Check if there is data
             if not self.sample_dict:
                 raise Exception('No data!')
@@ -192,7 +191,6 @@ class NanoQC(object):
         else:
             pathlib.Path(self.output_folder).mkdir(parents=True, exist_ok=True)  # Create if if it does not exist
 
-
     def find_fastq_files(self):
         for root, directories, filenames in os.walk(self.input_folder):
             for filename in filenames:
@@ -200,10 +198,9 @@ class NanoQC(object):
                 if os.path.isfile(absolute_path) and filename.endswith(('.fastq','.fastq.gz')):
                     self.input_fastq_list.append(absolute_path)
 
-            # check if input_fastq_list is not empty
-            if not self.input_fastq_list:
-                raise Exception("No fastq file found in %s!" % self.input_folder)
-
+        # check if input_fastq_list is not empty
+        if not self.input_fastq_list:
+            raise Exception("No fastq file found in %s!" % self.input_folder)
 
     def hbytes(self, num):
         """
@@ -2706,35 +2703,58 @@ class NanoQC(object):
         # https://jakevdp.github.io/PythonDataScienceHandbook/04.08-multiple-subplots.html
         fig, ax = plt.subplots(height, width, sharex='col', sharey='row', figsize=(height*5, width*5))
         sample_index = 0
-        for i in range(height):
-            for j in range(width):
-                if sample_index >= len(sample_list):
-                    ax[i, j].axis('off')  # don't draw the plot is no more sample for the 'too big' matrix
-                    # break
-                else:
-                    sample_name = sample_list[sample_index]
-                    tmp_df = df[df['name'].str.match(sample_name)]
-                    # Pass
-                    pass_df = tmp_df[tmp_df['flag'].str.match('pass')]
-                    sns.regplot(x=pass_df['time_string'], y=pass_df['%GC'], x_bins=x_bins, ax=ax[i, j],
-                                fit_reg=False, scatter_kws={'alpha': 0.6, 's': 30},
-                                label='Pass', color='blue')  # capsize=4, capthick=1
-                    # Fail
-                    fail_df = tmp_df[tmp_df['flag'].str.match('fail')]
-                    if not fail_df.empty:
-                        sns.regplot(x=fail_df['time_string'], y=fail_df['%GC'], x_bins=x_bins, ax=ax[i, j],
+        # If only one sample present, the grid makes things crash, so don't use.
+        if n_sample == 1:
+            sample_name = sample_list[sample_index]
+            tmp_df = df[df['name'].str.match(sample_name)]
+            # Pass
+            pass_df = tmp_df[tmp_df['flag'].str.match('pass')]
+            sns.regplot(x=pass_df['time_string'], y=pass_df['%GC'], x_bins=x_bins, ax=ax,
+                        fit_reg=False, scatter_kws={'alpha': 0.6, 's': 30},
+                        label='Pass', color='blue')  # capsize=4, capthick=1
+            # Fail
+            fail_df = tmp_df[tmp_df['flag'].str.match('fail')]
+            if not fail_df.empty:
+                sns.regplot(x=fail_df['time_string'], y=fail_df['%GC'], x_bins=x_bins, ax=ax,
+                            fit_reg=False, scatter_kws={'alpha': 0.6, 's': 30},
+                            label='Fail', color='red')
+
+            # Set major ticks every 4 h
+            ax.xaxis.set_major_locator(MultipleLocator(4))  # Want every 4 hours
+
+            # Add sample name to graph
+            ax.set_title(sample_name)
+            ax.set_xlabel(None)
+        else:
+            for i in range(height):
+                for j in range(width):
+                    if sample_index >= len(sample_list):
+                        ax[i][j].axis('off')  # don't draw the plot is no more sample for the 'too big' matrix
+                        # break
+                    else:
+                        sample_name = sample_list[sample_index]
+                        tmp_df = df[df['name'].str.match(sample_name)]
+                        # Pass
+                        pass_df = tmp_df[tmp_df['flag'].str.match('pass')]
+                        sns.regplot(x=pass_df['time_string'], y=pass_df['%GC'], x_bins=x_bins, ax=ax[i, j],
                                     fit_reg=False, scatter_kws={'alpha': 0.6, 's': 30},
-                                    label='Fail', color='red')
+                                    label='Pass', color='blue')  # capsize=4, capthick=1
+                        # Fail
+                        fail_df = tmp_df[tmp_df['flag'].str.match('fail')]
+                        if not fail_df.empty:
+                            sns.regplot(x=fail_df['time_string'], y=fail_df['%GC'], x_bins=x_bins, ax=ax[i, j],
+                                        fit_reg=False, scatter_kws={'alpha': 0.6, 's': 30},
+                                        label='Fail', color='red')
 
-                    # Set major ticks every 4 h
-                    ax[i, j].xaxis.set_major_locator(MultipleLocator(4))  # Want every 4 hours
+                        # Set major ticks every 4 h
+                        ax[i, j].xaxis.set_major_locator(MultipleLocator(4))  # Want every 4 hours
 
-                    # Add sample name to graph
-                    ax[i, j].set_title(sample_name)
-                    ax[i, j].set_xlabel(None)
+                        # Add sample name to graph
+                        ax[i, j].set_title(sample_name)
+                        ax[i, j].set_xlabel(None)
 
-                # Move to next sample
-                sample_index += 1
+                    # Move to next sample
+                    sample_index += 1
 
         # Add label to axes
         fig.suptitle('%GC over time per sample', fontsize=24)
@@ -2751,10 +2771,10 @@ class NanoQC(object):
         plt.figlegend(by_label.values(), by_label.keys())
 
         plt.tight_layout(rect=[0.02, 0.02, 1, 0.95])  # accounts for the "suptitile" [left, bottom, right, top]
-        fig.savefig(self.output_folder + "/pores_gc_output_vs_time_all.png")
-        with open(os.path.join(self.output_folder, 'pores_gc_output_vs_time_all.png'), 'rb') as image_file:
+        fig.savefig(self.output_folder + "/pores_gc_output_vs_time_per_sample.png")
+        with open(os.path.join(self.output_folder, 'pores_gc_output_vs_time_per_sample.png'), 'rb') as image_file:
             encoded_string = base64.b64encode(image_file.read())
-        plot = ImageForHTML(image_title='Pore GC Output Vs Time All',
+        plot = ImageForHTML(image_title='Pore GC Output Vs Time Per Sample',
                             image_base64_string=encoded_string.decode('utf-8'))
         return plot
 
@@ -3404,6 +3424,7 @@ class NanoQC(object):
         # Fetch required information
         my_sample_dict = defaultdict()  # to get the lengths (bp)
         for seq_id, seq in d.items():
+            print(seq_id)
             if seq.flag == b'True':
                 length = int(seq.length)
                 if length == 0:
